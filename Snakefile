@@ -4,37 +4,168 @@
     # Look into overhead of bam > sam
 
 
+LOG_DIR = "data/_log/"
+LOG_FILES = ["0_setup", "1QC_fastqc", "1_Hisat2Align", "1_SamToBam", "A2_BamToBigWig", "B2_FeatureCounts"]
+
 rule all:
     input:
-        "data/bigwig/{sample}.bigwig"
+        expand(f"{LOG_DIR}" + "{logfiles}.log", 
+                logfiles=LOG_FILES)
+# -----------------------------------------------------------------------------
+# Setup:
+# The first step of the pipeline, should be run before anything else: sets up 
+# directory infreastructure
+# TODO: Download necessary packages 
+# TODO: create an updated DAG of jobs as an aid in documentation
 
-rule _directory_setup_model:
+rule:
+    name: "0_setup"
     output:
-        '.chkpts/mkdir_chkpt'
+        touch(f"{LOG_DIR}0_setup.log")
+    log:
+        f"{LOG_DIR}0_setup.log"
     params:
         directories=directory(expand("data/{subdir}", 
-                              subdir=["raw", "aligned", "logs", "bigWig"]))
+                              subdir=["_log", "raw", "1_aligned", "A2_bigwig", 'B2_counts'])),
     shell:
-        "mkdir -p {params.directories}"
-        "touch .chkpts/.mkdir_chkpt"
+        """
+        mkdir -p {params.directories} 
+        """
 
-# TODO: come back to the downloading part later
+
+# -----------------------------------------------------------------------------
+# Alignment:
+# The primary function of this snakemake pipeline. Aligns raw NGS data to ref. 
+# genome. Additional quality control functionality.
+# directory infreastructure
+
+rule:
+    name: "1QC_fastqc"
+    input:
+        seq_data1="data/raw/{sample}_1.fastq.gz",
+        seq_data2="data/raw/{sample}_2.fastq.gz"
+    output:
+        fq1="data/1_aligned/{wildcards.sample}_1_fastqc",
+        fq2="data/1_aligned/{wildcards.sample}_2_fastqc"
+
+    log:
+        f"{LOG_DIR}1QC_fastqc.log"
+
+    script:
+        """
+        fastqc -o {output}  ${fastq}/${s}_R1_001.fastq.gz
+        fastqc -o   ${fastq}/${s}_R2_001.fastq.gz
+        """
+
+# Intermediate 
+rule: 
+    name: "1_Hisat2Align"
+    input:
+        ".chkpts/mkdir_chkpt",
+        ref_genome="data/ref_genome.fa",
+        seq_data1="data/raw/{sample}_1.fastq.gz",
+        seq_data2="data/raw/{sample}_2.fastq.gz"
+
+    output:
+        aligned=temp("data/1_aligned/{wiildcards.sample}.sam")
+    log:
+        f"{LOG_DIR}1_Hisat2Align.log"
+    threads:2
+    shell:
+        """
+        echo "Aligning Reads from {wildcards.sample} using Hisat2"
+        hisat2  -x {input.ref_genome} \
+                -1 {input.seq_data1} \
+                -2 {input.seq_data2} \
+                --rna-strandness RF \
+                -S {output.aligned} \
+                --threads {threads}
+
+        """
+
+rule:
+    name: "1_SamToBam"
+    input:
+        "data/1_aligned/{wildcards.sample}.sam"
+    output:
+        "data/1_aligned/{wildcards.sample}.sorted.bam"
+    log:
+        f"{LOG_DIR}1_SamToBam.log"
+
+    shell:
+        """
+        samtools view -bS {input} | samtools sort -o {output}
+        """
+        # TODO: remove SAM? Combine this with the StarAlignRule?
+
+rule: 
+    name: "A2_BamToBigWig"
+    input:
+        "data/1_aligned/{sample}.sorted.bam"
+    output:
+        bw_plus ="data/A2_bigwig/{wildcards.sample}_plus.bw",
+        bw_minus="data/A2_bigwig/{wildcards.sample}_minus.bw"
+    log: 
+        f"{LOG_DIR}A2_BamToBigWig.log"
+    shell:
+        """
+        echo "Converting: "{wildcards.sample}" to bigWig file."
+        echo "Saving as:'{output}'"
+        bamCoverage --filterRNAstrand forward --normalizeUsing CPM --effectiveGenomeSize 2913022398  -b {input} -o {output.bw_plus}
+        bamCoverage --filterRNAstrand reverse --normalizeUsing CPM --effectiveGenomeSize 2913022398  -b {input} -o {output.bw_minus}
+        """
+        #""" OLD IMPLEMENTATION: Consider deleting
+        #echo "Converting: "{wildcards.sample}" to bigWig file."
+        #echo "Saving as:'{output}'"
+        #bedtools genomeCoverageBed -d -bga -g ./ -ibam {input}  > {output}
+        #"""
+
+rule: 
+    name: "B2_FeatureCounts"
+    input:
+        bam="data/1_aligned/{sample}.sorted.bam",
+        gtf="data/features/features.gtf"
+    output:
+        "data/counts/{wildcards.sample}_counts.txt"
+    log: 
+        f"{LOG_DIR}B2_FeatureCounts.log"
+    script:
+        """
+        htseq-count -f bam \
+                    -s reverse \
+                    -t transcript \
+                    -r pos \
+                    -m intersection-nonempty \
+                    --nonunique all \
+                    -t transcript \
+                    -i gene_name {input.bam} \
+                     {input.gtf}
+                    > {output}
+        """
+
+
+# -----------------------------------------------------------------------------
+# These are targets that I implemented earlier, but need to be polished to 
+# productively fit into the worflow.
+
 """rule download_sra_target:
     input:
         expand('data/raw/{sample}_{pair_no}.fastq' ,
-                pair_no = ["1","2"])"""
+                pair_no = ["1","2"])
 
-rule _download_sra_model:
+    rule _download_sra_model:
     output:
         "data/raw/{sample}_1.fastq",
         "data/raw/{sample}_2.fastq"
     shell:
-        """
+
         echo "Downloading accession ID: {wildcards.sample}"
         fasterq-dump --split-files {wildcards.sample} -O data/raw
         gzip {output}
-        """
+"""
 
+
+"""
 rule StarAlign:
     input:
         ".chkpts/mkdir_chkpt",
@@ -49,7 +180,6 @@ rule StarAlign:
     # TODO: look into making this customizeable, or at least raise it for better computers
     threads:2
     shell:
-        """
         echo "Processing: {wildcards.sample}"
         echo "Saving at: {output.aligned}"
         STAR --genomeDir {input.ref_genome} \
@@ -58,29 +188,5 @@ rule StarAlign:
              --outFileNamePrefix {output.aligned} \
              --readFilesCommand zcat \
              --quantMode GeneCounts
-        """
-    
+"""
 
-rule SamToBam:
-    input:
-        "data/aligned/{sample}.sam"
-    output:
-        "data/aligned/{sample}.sorted.bam"
-    shell:
-        """
-        samtools view -bS {input} | samtools sort -o {output}
-        
-        """
-        # TODO: remove SAM? Combine this with the StarAlignRule?
-
-rule BamToBigWig:
-    input:
-        "data/aligned/{sample}.sorted.bam"
-    output:
-        "data/bigwig/{sample}.bigwig"
-    shell:
-        """
-        echo "Converting: "{wildcards.sample}" to bigWig file."
-        echo "Saving as:'{output}'"
-        bedtools genomeCoverageBed -d -bga -g ./ -ibam {input}  > {output}
-        """
