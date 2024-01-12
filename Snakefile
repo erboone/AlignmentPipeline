@@ -3,14 +3,16 @@
 # TODO: Any reason to keep the samfiles around
     # Look into overhead of bam > sam
 
-
+SAMPLES = ["SRR27488309"]
 LOG_DIR = "data/_log/"
 LOG_FILES = ["0_setup", "1QC_fastqc", "1_Hisat2Align", "1_SamToBam", "A2_BamToBigWig", "B2_FeatureCounts"]
 
+
 rule all:
     input:
-        expand(f"{LOG_DIR}" + "{logfiles}.log", 
-                logfiles=LOG_FILES)
+        expand("data/counts/{samples}_counts.txt",samples=SAMPLES),
+        expand("data/_log/.1qc.{samples}.done",samples=SAMPLES),
+
 # -----------------------------------------------------------------------------
 # Setup:
 # The first step of the pipeline, should be run before anything else: sets up 
@@ -26,7 +28,7 @@ rule:
         f"{LOG_DIR}0_setup.log"
     params:
         directories=directory(expand("data/{subdir}", 
-                              subdir=["_log", "raw", "1_aligned", "A2_bigwig", 'B2_counts'])),
+                              subdir=["_log", "raw", "reference", "1_aligned", "A2_bigwig", 'B2_counts'])),
     shell:
         """
         mkdir -p {params.directories} 
@@ -45,31 +47,28 @@ rule:
         seq_data1="data/raw/{sample}_1.fastq.gz",
         seq_data2="data/raw/{sample}_2.fastq.gz"
     output:
-        fq1="data/1_aligned/{wildcards.sample}_1_fastqc",
-        fq2="data/1_aligned/{wildcards.sample}_2_fastqc"
-
-    log:
-        f"{LOG_DIR}1QC_fastqc.log"
+        touch(f"{LOG_DIR}.1qc."+ "{sample}.done"),
+        fq1="data/1_aligned/{sample}_1_fastqc",
+        fq2="data/1_aligned/{sample}_2_fastqc"
 
     script:
         """
-        fastqc -o {output}  ${fastq}/${s}_R1_001.fastq.gz
-        fastqc -o   ${fastq}/${s}_R2_001.fastq.gz
+        fastqc -o {output.fq1} {input.seq_data1}
+        fastqc -o {output.fq2} {input.seq_data2}
         """
 
 # Intermediate 
 rule: 
     name: "1_Hisat2Align"
     input:
-        ".chkpts/mkdir_chkpt",
-        ref_genome="data/ref_genome.fa",
+        ref_genome="data/reference/ref_genome.fa",
         seq_data1="data/raw/{sample}_1.fastq.gz",
         seq_data2="data/raw/{sample}_2.fastq.gz"
 
     output:
-        aligned=temp("data/1_aligned/{wiildcards.sample}.sam")
+        aligned=temp("data/1_aligned/{sample}.sam")
     log:
-        f"{LOG_DIR}1_Hisat2Align.log"
+        f"{LOG_DIR}" + "{sample}_1_Hisat2Align.log"
     threads:2
     shell:
         """
@@ -86,11 +85,11 @@ rule:
 rule:
     name: "1_SamToBam"
     input:
-        "data/1_aligned/{wildcards.sample}.sam"
+        "data/1_aligned/{sample}.sam"
     output:
-        "data/1_aligned/{wildcards.sample}.sorted.bam"
+        "data/1_aligned/{sample}.sorted.bam"
     log:
-        f"{LOG_DIR}1_SamToBam.log"
+        f"{LOG_DIR}" + "{sample}_1_SamToBam.log"
 
     shell:
         """
@@ -103,10 +102,10 @@ rule:
     input:
         "data/1_aligned/{sample}.sorted.bam"
     output:
-        bw_plus ="data/A2_bigwig/{wildcards.sample}_plus.bw",
-        bw_minus="data/A2_bigwig/{wildcards.sample}_minus.bw"
+        bw_plus ="data/A2_bigwig/{sample}_plus.bw",
+        bw_minus="data/A2_bigwig/{sample}_minus.bw"
     log: 
-        f"{LOG_DIR}A2_BamToBigWig.log"
+        f"{LOG_DIR}" + "{sample}_A2_BamToBigWig.log"
     shell:
         """
         echo "Converting: "{wildcards.sample}" to bigWig file."
@@ -124,11 +123,11 @@ rule:
     name: "B2_FeatureCounts"
     input:
         bam="data/1_aligned/{sample}.sorted.bam",
-        gtf="data/features/features.gtf"
+        gtf="data/reference/features.gtf"
     output:
-        "data/counts/{wildcards.sample}_counts.txt"
+        "data/counts/{sample}_counts.txt"
     log: 
-        f"{LOG_DIR}B2_FeatureCounts.log"
+        f"{LOG_DIR}" + "{sample}_B2_FeatureCounts.log"
     script:
         """
         htseq-count -f bam \
@@ -144,6 +143,7 @@ rule:
         """
 
 
+# _____________________________________________________________________________
 # -----------------------------------------------------------------------------
 # These are targets that I implemented earlier, but need to be polished to 
 # productively fit into the worflow.
